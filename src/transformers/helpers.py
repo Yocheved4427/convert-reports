@@ -103,3 +103,73 @@ def compute_overtime_buckets(total_hours: float) -> tuple[float, float, float]:
     h125 = min(remainder, 2.0) if remainder > 0 else 0.0
     h150 = max(0.0, total_hours - 10.0)
     return (round(h100, 2), round(h125, 2), round(h150, 2))
+
+
+# ── OCR Date Correction ────────────────────────────────────────────────────────
+
+def infer_true_month_year(dates: list[str]) -> tuple[int, int] | None:
+    """
+    Determine the *true* (month, year) for a report by voting.
+
+    The OCR occasionally mis-reads a digit (e.g. January → November).
+    Taking the **mode** over all parsed row-dates gives the correct answer
+    in all realistic cases (one or two bad rows out of ~20).
+
+    Args:
+        dates: list of date strings in d/m/yy, d/m/yyyy, dd/mm/yy, dd/mm/yyyy.
+
+    Returns:
+        ``(month, year)`` tuple where year is always 4-digit, or ``None`` if
+        the list is empty / unparseable.
+    """
+    from collections import Counter
+
+    counts: Counter[tuple[int, int]] = Counter()
+    for d in dates:
+        parts = d.strip().split("/")
+        if len(parts) != 3:
+            continue
+        try:
+            month = int(parts[1])
+            year = int(parts[2])
+            if year < 100:
+                year += 2000
+            if 1 <= month <= 12 and 2000 <= year <= 2100:
+                counts[(month, year)] += 1
+        except ValueError:
+            continue
+
+    if not counts:
+        return None
+    return counts.most_common(1)[0][0]
+
+
+def fix_date_month(date_str: str, true_month: int, true_year: int) -> str:
+    """
+    Return *date_str* with its month and year replaced by *true_month* /
+    *true_year*, preserving the original day number.
+
+    If the resulting date would be invalid (e.g. 31 February), the original
+    string is returned unchanged.
+
+    Args:
+        date_str:   Original date string – any of d/m/yy, dd/mm/yy, …
+        true_month: Correct month (1-12).
+        true_year:  Correct year (4-digit).
+
+    Returns:
+        Corrected date string in dd/mm/yyyy format, or the original on error.
+    """
+    parts = date_str.strip().split("/")
+    if len(parts) != 3:
+        return date_str
+    try:
+        day = int(parts[0])
+        if not (1 <= day <= 31):
+            return date_str
+        # Validate that this day actually exists in the target month/year
+        from datetime import datetime
+        dt = datetime(true_year, true_month, day)
+        return f"{dt.day:02d}/{dt.month:02d}/{dt.year}"
+    except (ValueError, OverflowError):
+        return date_str

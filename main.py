@@ -18,15 +18,9 @@ from pathlib import Path
 
 # ── Layer imports ──────────────────────────────────────────────────────────────
 from src.detectors.report_detector import detect_from_rows
-from src.models import ReportType
+from src.factory import ReportProcessorFactory
 from src.ocr_utils import ocr_pdf
-from src.parsers.type_a_parser import TypeAParser
-from src.parsers.type_n_parser import TypeNParser
-from src.transformers.type_a_transformer import TypeATransformer
-from src.transformers.type_n_transformer import TypeNTransformer
 from src.validators.report_validator import ValidationError, validate_report
-from src.renderers.type_a_renderer import TypeARenderer
-from src.renderers.type_n_renderer import TypeNRenderer
 
 
 # ── Pipeline ───────────────────────────────────────────────────────────────────
@@ -53,22 +47,17 @@ def process_single_pdf(
     report_type = detect_from_rows(rows)
     logger.info(f"  Detected type: {report_type.value}")
 
-    # Step 3: Parse
-    if report_type == ReportType.TYPE_A:
-        parser = TypeAParser()
-        report = parser.parse(rows, pdf_path)
-    else:
-        parser = TypeNParser()
-        report = parser.parse(rows, pdf_path)
+    # Steps 3-6: Resolve components via factory (Open/Closed – no if/else needed)
+    components = ReportProcessorFactory.get(report_type)
 
+    # Step 3: Parse
+    report = components.parser.parse(rows, pdf_path)
     logger.info(f"  Parsed {len(report.rows)} data rows")
 
     # Step 4: Transform
-    if report_type == ReportType.TYPE_A:
-        transformer = TypeATransformer()
-    else:
-        transformer = TypeNTransformer()
-    transformed = transformer.transform(report, seed=seed, location_override=location_override)
+    transformed = components.transformer.transform(
+        report, seed=seed, location_override=location_override
+    )
 
     # Step 5: Validate
     try:
@@ -81,12 +70,7 @@ def process_single_pdf(
     # Step 6: Render
     output_name = pdf_path.stem + "_converted.xlsx"
     output_path = output_dir / output_name
-
-    if report_type == ReportType.TYPE_A:
-        renderer = TypeARenderer()
-    else:
-        renderer = TypeNRenderer()
-    renderer.render(transformed, output_path)
+    components.renderer.render(transformed, output_path)
 
     logger.info(f"  Output: {output_path}")
     return output_path
