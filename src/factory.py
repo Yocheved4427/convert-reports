@@ -50,9 +50,30 @@ class ReportProcessorFactory:
     def get(cls, report_type: ReportType) -> PipelineComponents:
         """Return (parser, transformer, renderer) for *report_type*.
 
+        Uses structural pattern-matching to resolve built-in types instantly;
+        falls back to the runtime registry for any dynamically registered type.
+
         Raises:
             KeyError: if *report_type* is not registered.
         """
+        # ── Built-in types: match/case dispatch ───────────────────
+        match report_type:
+            case ReportType.TYPE_A:
+                return PipelineComponents(
+                    parser=TypeAParser(),
+                    transformer=TypeATransformer(),
+                    renderer=TypeARenderer(),
+                )
+            case ReportType.TYPE_N:
+                return PipelineComponents(
+                    parser=TypeNParser(),
+                    transformer=TypeNTransformer(),
+                    renderer=TypeNRenderer(),
+                )
+            case _:
+                pass  # fall through to runtime registry
+
+        # ── Dynamic/plugin types: registry fallback ───────────────
         if report_type not in cls._registry:
             raise KeyError(
                 f"No pipeline registered for ReportType '{report_type.value}'. "

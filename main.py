@@ -17,9 +17,8 @@ import sys
 from pathlib import Path
 
 # ── Layer imports ──────────────────────────────────────────────────────────────
-from src.detectors.report_detector import detect_from_rows
+from src.detectors.report_detector import detect_report_type
 from src.factory import ReportProcessorFactory
-from src.ocr_utils import ocr_pdf
 from src.validators.report_validator import ValidationError, validate_report
 
 
@@ -40,26 +39,23 @@ def process_single_pdf(
     logger.info(f"Processing: {pdf_path.name}")
     logger.info(f"{'='*60}")
 
-    # Step 1: OCR
-    rows = ocr_pdf(pdf_path)
-
-    # Step 2: Detect type
-    report_type = detect_from_rows(rows)
+    # Step 1: Detect report type (OCR runs internally inside detector)
+    report_type = detect_report_type(pdf_path)
     logger.info(f"  Detected type: {report_type.value}")
 
-    # Steps 3-6: Resolve components via factory (Open/Closed – no if/else needed)
+    # Steps 2–5: Resolve pipeline components via factory
     components = ReportProcessorFactory.get(report_type)
 
-    # Step 3: Parse
-    report = components.parser.parse(rows, pdf_path)
+    # Step 2: Parse  – OCR runs internally inside parse_pdf; no duplicate I/O
+    report = components.parser.parse_pdf(pdf_path)
     logger.info(f"  Parsed {len(report.rows)} data rows")
 
-    # Step 4: Transform
+    # Step 3: Transform
     transformed = components.transformer.transform(
         report, seed=seed, location_override=location_override
     )
 
-    # Step 5: Validate
+    # Step 4: Validate
     try:
         validate_report(transformed)
         logger.info("  Validation: PASSED")
@@ -67,7 +63,7 @@ def process_single_pdf(
         logger.warning(f"  Validation: FAILED — {e}")
         # Continue anyway; the output is still useful for inspection
 
-    # Step 6: Render
+    # Step 5: Render
     output_name = pdf_path.stem + "_converted.xlsx"
     output_path = output_dir / output_name
     components.renderer.render(transformed, output_path)

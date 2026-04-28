@@ -125,11 +125,11 @@ class TestTypeATransformer:
         for row in result.rows:
             assert row.location == "Tel Aviv"
 
-    def test_location_cleared_when_no_override(self):
+    def test_location_preserved_when_no_override(self):
         report = _type_a_report()
         result = self.transformer.transform(report, seed=0, location_override="")
         for row in result.rows:
-            assert row.location == ""
+            assert row.location == "Office"  # original fixture value is preserved
 
     def test_ocr_month_error_corrected(self):
         """Most rows claim month=1; two rows have OCR error month=11 → modal wins."""

@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import Counter
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from src.models import ReportType
 from src.ocr_utils import OCRRow, OCRToken, ocr_pdf
@@ -25,6 +26,11 @@ logger = logging.getLogger(__name__)
 
 # Keywords that only appear in Type-A (overtime) reports
 _OVERTIME_KEYWORDS = {"100%", "125%", "150%"}
+
+# Hebrew Unicode block: Alef (\u05D0) through Tav (\u05EA)
+_HEBREW_RE = re.compile(r"[\u05D0-\u05EA]")
+_DATE_RE    = re.compile(r"\d{1,2}/\d{1,2}/\d{2,4}")
+_TIME_RE    = re.compile(r"^\d{1,2}[.:;]\d{2}$")
 
 
 def _all_text(rows: List[OCRRow]) -> str:
@@ -73,6 +79,66 @@ def _date_format_hint(rows: List[OCRRow]) -> str:
     elif short_count > long_count:
         return "short"
     return "unknown"
+
+
+def _is_hebrew(text: str) -> bool:
+    """Return True if *text* contains at least one Hebrew character."""
+    return bool(_HEBREW_RE.search(text))
+
+
+def detect_location(rows: List[OCRRow]) -> Optional[str]:
+    """
+    Identify the workplace location (מקום עבודה) from Type-A OCR rows.
+
+    Strategy:
+      • For every data row that contains a date, collect the text tokens
+        that appear **between** the day-of-week token and the first time
+        token.  In RTL layout this is the "location" column.
+      • Keep only tokens that contain at least one Hebrew character and
+        are not single-letter noise.
+      • Return the most common such token (mode), or ``None`` if nothing
+        qualifies.
+
+    Args:
+        rows: OCR rows already sorted RTL (highest-x first per row).
+
+    Returns:
+        The detected Hebrew location string, or ``None``.
+    """
+    candidates: list[str] = []
+
+    for row in rows:
+        tokens = row.tokens  # RTL order: rightmost first
+        # Find first date token index
+        date_idx: Optional[int] = None
+        for i, tok in enumerate(tokens):
+            if _DATE_RE.search(tok.text):
+                date_idx = i
+                break
+        if date_idx is None:
+            continue
+
+        # Tokens after the date (moving left in RTL = lower x)
+        after_date = tokens[date_idx + 1:]
+
+        # Collect text tokens until we hit the first time-like token
+        for tok in after_date:
+            t = tok.text.strip()
+            if _TIME_RE.match(t):          # entry/exit time → stop
+                break
+            # Accept only Hebrew-containing, non-trivial tokens
+            if _is_hebrew(t) and len(t) > 1:
+                candidates.append(t)
+
+    if not candidates:
+        return None
+
+    # Return the most frequent Hebrew location token
+    most_common, _ = Counter(candidates).most_common(1)[0]
+    logger.debug(f"Detected Hebrew location: '{most_common}' "
+                 f"(from {len(candidates)} candidates, "
+                 f"vocab={Counter(candidates).most_common(5)})")
+    return most_common
 
 
 def detect_report_type(pdf_path: str | Path) -> ReportType:

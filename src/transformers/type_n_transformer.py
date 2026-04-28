@@ -13,6 +13,7 @@ Rules (all thresholds driven by ``src.config.type_n_config``):
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import random
 
@@ -59,7 +60,7 @@ class TypeNTransformer(BaseTransformer):
             )
 
             if not row.entry_time or not row.exit_time:
-                new_rows.append(row.model_copy(update=dict(date=date)))
+                new_rows.append(dataclasses.replace(row, date=date))
                 continue
 
             # ── Step 2: Shift entry ────────────────────────────────
@@ -97,13 +98,14 @@ class TypeNTransformer(BaseTransformer):
             net_minutes = time_to_minutes(new_exit) - time_to_minutes(new_entry)
             total_h = round(net_minutes / 60.0, 2)
 
-            new_rows.append(row.model_copy(update=dict(
+            new_rows.append(dataclasses.replace(
+                row,
                 date=date,
                 entry_time=new_entry,
                 exit_time=new_exit,
                 day_of_week=day,
                 total_hours=total_h,
-            )))
+            ))
 
         # ── Step 7: Recompute summary ──────────────────────────────
         rate = report.summary.hourly_rate if report.summary else 0.0
@@ -115,7 +117,7 @@ class TypeNTransformer(BaseTransformer):
             total_pay=round(total_hours * rate, 2),
         )
 
-        new_report = report.model_copy(update=dict(rows=new_rows, summary=new_summary))
+        new_report = dataclasses.replace(report, rows=new_rows, summary=new_summary)
 
         logger.info(
             f"Type-N transformed: {len(new_rows)} rows, "

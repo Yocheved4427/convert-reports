@@ -36,20 +36,30 @@ def _find_date_token(tokens: List[OCRToken]) -> Optional[Tuple[int, str]]:
     return None
 
 
-def _classify_tok(tok: OCRToken) -> str:
+# Token kind literal – used as the subject in match/case blocks below.
+_TokKind = str   # one of: "date" | "time" | "number" | "text"
+
+
+def _classify_tok(tok: OCRToken) -> _TokKind:
+    """Classify an OCR token into one of four mutually-exclusive kinds.
+
+    Returns a string literal so callers can use ``match kind: case "time": …``
+    (structural pattern-matching on string values).
+    """
     t = tok.text.strip()
-    if _DATE_LONG_RE.search(t):
-        return "date"
-    if _TIME_RE.match(t):
-        return "time"
-    if _DECIMAL_RE.match(t):
-        return "number"
-    try:
-        int(t)
-        return "number"
-    except ValueError:
-        pass
-    return "text"
+    match True:
+        case _ if _DATE_LONG_RE.search(t):
+            return "date"
+        case _ if _TIME_RE.match(t):
+            return "time"
+        case _ if _DECIMAL_RE.match(t):
+            return "number"
+        case _:
+            try:
+                int(t)
+                return "number"
+            except ValueError:
+                return "text"
 
 
 def _safe_float(raw: str, default: float = 0.0) -> float:
@@ -81,27 +91,29 @@ class TypeAParser(BaseParser):
             texts: List[str] = []
 
             for tok in after_date:
-                cls = _classify_tok(tok)
-                if cls == "time" and len(times) < 2:
-                    # Only first 2 time-tokens are entry/exit;
-                    # subsequent time-like values (e.g. 00.30 break) → numbers
-                    times.append(tok.text.strip())
-                elif cls in ("number", "time"):
-                    # time-like but we already have 2 times → treat as number
-                    numbers.append(_safe_float(tok.text))
-                elif cls == "text":
-                    texts.append(tok.text.strip())
+                match _classify_tok(tok):
+                    case "time" if len(times) < 2:
+                        # First 2 time-tokens are entry/exit
+                        times.append(tok.text.strip())
+                    case "time" | "number":
+                        # time-like but already have 2 → treat as number
+                        numbers.append(_safe_float(tok.text))
+                    case "text":
+                        texts.append(tok.text.strip())
 
             # Day of week: text token right before date (if any)
             day_of_week = ""
             for tok in tokens[:date_idx]:
-                if _classify_tok(tok) == "text" and len(tok.text.strip()) > 1:
-                    day_of_week = tok.text.strip()
-                    break
+                match _classify_tok(tok):
+                    case "text" if len(tok.text.strip()) > 1:
+                        day_of_week = tok.text.strip()
+                        break
 
             if not day_of_week and texts:
                 day_of_week = texts.pop(0)
 
+            # Raw OCR location text – stored as-is; the transformer will
+            # canonicalise it via LocationRegistry.
             location = texts[0] if texts else ""
 
             # Times: entry then exit (sorted by descending x → entry first)

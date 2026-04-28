@@ -1,0 +1,15 @@
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+tests/
+*.egg-info/
+.git/
+.gitignore
+.env
+output_pdfs/
+output.txt/
+*.html
+output.txt/
+README.md

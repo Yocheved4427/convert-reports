@@ -115,10 +115,14 @@ def validate_report(report: Union[TypeAReport, TypeNReport]) -> None:
     """
     Validate a report after transformation.
     Raises ValidationError if any check fails.
+
+    Uses structural pattern-matching to dispatch per report type.
+    Each ``case`` matches the *class* of the frozen dataclass instance.
     """
-    if isinstance(report, TypeAReport):
-        _validate_type_a(report)
-    elif isinstance(report, TypeNReport):
-        _validate_type_n(report)
-    else:
-        raise TypeError(f"Unknown report type: {type(report)}")
+    match report:
+        case TypeAReport():
+            _validate_type_a(report)
+        case TypeNReport():
+            _validate_type_n(report)
+        case _:
+            raise TypeError(f"Unknown report type: {type(report)}")

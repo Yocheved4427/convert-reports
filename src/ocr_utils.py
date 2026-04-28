@@ -9,23 +9,38 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Tuple
+from typing import Any, List, Tuple
 
-import easyocr
 import pdfplumber
 from PIL import Image
 
 logger = logging.getLogger(__name__)
 
 # Singleton reader (model loading is expensive)
-_reader: easyocr.Reader | None = None
+_reader: Any | None = None
+_reader_error: Exception | None = None
 
 
-def _get_reader() -> easyocr.Reader:
+def _get_reader() -> Any:
     global _reader
+    global _reader_error
+
+    if _reader_error is not None:
+        raise RuntimeError(
+            f"EasyOCR is unavailable: {_reader_error}"
+        ) from _reader_error
+
     if _reader is None:
         logger.info("Loading EasyOCR model (first call)…")
-        _reader = easyocr.Reader(["en"], gpu=False, verbose=False)
+        try:
+            import easyocr
+
+            _reader = easyocr.Reader(["en"], gpu=False, verbose=False)
+        except Exception as exc:
+            _reader_error = exc
+            raise RuntimeError(
+                f"EasyOCR failed to initialize: {exc}"
+            ) from exc
     return _reader
 
 
@@ -78,6 +93,35 @@ def ocr_image(image: Image.Image) -> List[OCRToken]:
     return tokens
 
 
+def extract_pdf_words(pdf_path: str | Path) -> List[OCRToken]:
+    """Fallback extractor using embedded PDF text positions (no OCR model needed)."""
+    tokens: List[OCRToken] = []
+    with pdfplumber.open(str(pdf_path)) as pdf:
+        page = pdf.pages[0]
+        words = page.extract_words() or []
+
+    for word in words:
+        text = (word.get("text") or "").strip()
+        if not text:
+            continue
+        x_min = float(word["x0"])
+        x_max = float(word["x1"])
+        y_min = float(word["top"])
+        y_max = float(word["bottom"])
+        tokens.append(OCRToken(
+            text=text,
+            confidence=1.0,
+            x_center=(x_min + x_max) / 2,
+            y_center=(y_min + y_max) / 2,
+            x_min=x_min,
+            y_min=y_min,
+            x_max=x_max,
+            y_max=y_max,
+        ))
+
+    return tokens
+
+
 def cluster_into_rows(tokens: List[OCRToken],
                       y_tolerance: float = 18) -> List[OCRRow]:
     """
@@ -115,8 +159,16 @@ def cluster_into_rows(tokens: List[OCRToken],
 def ocr_pdf(pdf_path: str | Path, resolution: int = 200) -> List[OCRRow]:
     """Full pipeline: PDF → image → OCR → clustered rows."""
     logger.info(f"OCR processing: {pdf_path}")
-    img = pdf_to_image(pdf_path, resolution)
-    tokens = ocr_image(img)
+    try:
+        img = pdf_to_image(pdf_path, resolution)
+        tokens = ocr_image(img)
+    except Exception as exc:
+        logger.warning(
+            "EasyOCR unavailable (%s). Falling back to pdfplumber text extraction.",
+            exc,
+        )
+        tokens = extract_pdf_words(pdf_path)
+
     rows = cluster_into_rows(tokens)
     logger.info(f"  → {len(tokens)} tokens in {len(rows)} rows")
     return rows

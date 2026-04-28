@@ -9,15 +9,18 @@ Rules (all thresholds driven by ``src.config.type_a_config``):
   5. Recalculate day-of-week from the corrected date.
   6. Randomly select break duration from the configured pool.
   7. Recalculate net hours and overtime buckets (Israeli labour law).
-  8. Recompute summary totals.
+  8. Resolve מקום עבודה via LocationRegistry → canonical ID + display name.
+  9. Recompute summary totals.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import random
 
 from src.config import type_a_config as cfg
+from src.location_registry import location_registry
 from src.models import TypeAReport, TypeASummary
 from src.transformers.base_transformer import BaseTransformer
 from src.transformers.helpers import (
@@ -50,6 +53,33 @@ class TypeATransformer(BaseTransformer):
             logger.debug(f"Type-A inferred month/year: {true_month:02d}/{true_year}")
         else:
             true_month, true_year = None, None
+
+        # ── Step 8a: Infer modal location across all rows ─────────
+        # The parser stores raw OCR text; some rows may have empty or
+        # garbled location text.  We resolve every non-empty value through
+        # the registry here, pick the most frequent *known* result as the
+        # report-level fallback, then apply it row-by-row below.
+        from collections import Counter
+        if location_override:
+            _fallback_record = location_registry.resolve(location_override)
+        else:
+            _resolved = [
+                location_registry.resolve(r.location)
+                for r in report.rows if r.location.strip()
+            ]
+            _known = [rec for rec in _resolved if rec.is_known]
+            if _known:
+                best_id = Counter(rec.location_id for rec in _known).most_common(1)[0][0]
+                _fallback_record = next(r for r in _known if r.location_id == best_id)
+            elif _resolved:
+                _fallback_record = _resolved[0]
+            else:
+                _fallback_record = location_registry.resolve("")
+        logger.info(
+            f"Type-A modal location: id='{_fallback_record.location_id}' "
+            f"display='{_fallback_record.display_name}' "
+            f"known={_fallback_record.is_known}"
+        )
 
         new_rows = []
         for row in report.rows:
@@ -89,8 +119,27 @@ class TypeATransformer(BaseTransformer):
             # ── Step 5: Recalculate day-of-week ───────────────────
             day = date_to_hebrew_day(date) or row.day_of_week
 
-            # ── Location override / clear garbled OCR text ────────
-            location = location_override if location_override else ""
+            # ── Step 8b: Resolve this row's location ──────────────
+            # If a CLI override was given, it applies to every row
+            # unconditionally.  Otherwise try the row's own OCR text;
+            # fall back to the modal result when the row text is empty
+            # or resolves to an unknown location.
+            if location_override:
+                loc_record = _fallback_record   # already resolved above
+            else:
+                raw_location = row.location.strip()
+                if raw_location:
+                    loc_record = location_registry.resolve(raw_location)
+                    # Prefer the known modal over an unknown per-row result
+                    if not loc_record.is_known and _fallback_record.is_known:
+                        loc_record = _fallback_record
+                else:
+                    loc_record = _fallback_record
+            location = loc_record.display_name if loc_record.is_known else ""
+            logger.debug(
+                f"Row {row.date}: raw='{row.location}' "
+                f"→ id='{loc_record.location_id}' known={loc_record.is_known}"
+            )
 
             # ── Step 6: Pick break ────────────────────────────────
             new_break = rng.choice(cfg.break_options)
@@ -100,18 +149,20 @@ class TypeATransformer(BaseTransformer):
             net_h   = round(max(0.0, gross_h - new_break), 2)
             h100, h125, h150 = compute_overtime_buckets(net_h)
 
-            new_rows.append(row.model_copy(update=dict(
+            new_rows.append(dataclasses.replace(
+                row,
                 date=date,
                 entry_time=new_entry,
                 exit_time=new_exit,
                 day_of_week=day,
                 location=location,
+                location_id=loc_record.location_id,
                 break_minutes=new_break,
                 total_hours=net_h,
                 hours_100=h100,
                 hours_125=h125,
                 hours_150=h150,
-            )))
+            ))
 
         # ── Step 8: Recompute summary ──────────────────────────────
         new_summary = TypeASummary(
@@ -122,10 +173,18 @@ class TypeATransformer(BaseTransformer):
             hours_150=round(sum(r.hours_150 for r in new_rows), 2),
         )
 
-        new_report = report.model_copy(update=dict(rows=new_rows, summary=new_summary))
+        # Derive the report-level location ID from the modal fallback
+        # already computed in step 8a above.
+        new_report = dataclasses.replace(
+            report,
+            rows=new_rows,
+            summary=new_summary,
+            report_location_id=_fallback_record.location_id,
+        )
 
         logger.info(
             f"Type-A transformed: {len(new_rows)} rows, "
-            f"total={new_summary.total_hours}h"
+            f"total={new_summary.total_hours}h, "
+            f"location_id='{_fallback_record.location_id}'"
         )
         return new_report
