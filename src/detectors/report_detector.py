@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from src.models import ReportType
-from src.ocr_utils import OCRRow, OCRToken, ocr_pdf
+from src.ocr import OCRRow, OCRToken, ocr_pdf
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ def _all_text(rows: List[OCRRow]) -> str:
 
 def _count_numeric_columns(rows: List[OCRRow]) -> float:
     """Average number of numeric-looking tokens per data row (skip first rows)."""
-    from src.ocr_utils import is_numeric_token
+    from src.ocr import is_numeric_token
     counts = []
     for row in rows[3:]:  # skip header rows
         n = sum(1 for t in row.tokens if is_numeric_token(t))
@@ -145,7 +145,7 @@ def detect_report_type(pdf_path: str | Path) -> ReportType:
     """
     Determine the report type from a PDF file.
 
-    Returns ReportType.TYPE_A or ReportType.TYPE_N.
+    Returns ReportType.TYPE_A or ReportType.TYPE_B.
     """
     rows = ocr_pdf(pdf_path)
     full = _all_text(rows)
@@ -164,7 +164,7 @@ def detect_report_type(pdf_path: str | Path) -> ReportType:
     if has_overtime or avg_cols >= 7 or date_fmt == "long":
         return ReportType.TYPE_A
     else:
-        return ReportType.TYPE_N
+        return ReportType.TYPE_B
 
 
 def detect_from_rows(rows: List[OCRRow]) -> ReportType:
@@ -178,4 +178,4 @@ def detect_from_rows(rows: List[OCRRow]) -> ReportType:
     if has_overtime or avg_cols >= 7 or date_fmt == "long":
         return ReportType.TYPE_A
     else:
-        return ReportType.TYPE_N
+        return ReportType.TYPE_B

@@ -1,6 +1,8 @@
 """
-OCR utilities – extract text with bounding boxes from PDF images,
-then cluster into rows/columns for structured parsing.
+pdfplumber_ocr.py – structured PDF text extraction using pdfplumber.
+
+Extracts text with bounding boxes and clusters tokens into visual rows/columns.
+Used by the parsers for structured data extraction.
 """
 
 from __future__ import annotations
@@ -198,14 +200,6 @@ def parse_float(raw: str) -> float | None:
         return float(raw)
     except ValueError:
         return None
-
-
-def parse_date(raw: str) -> str | None:
-    """Normalise a date like '2/10/2022' or '02/10/22'.  Returns as-is if ok."""
-    m = _DATE_DMY_RE.match(raw.strip())
-    if m:
-        return raw.strip()
-    return None
 
 
 def is_numeric_token(tok: OCRToken) -> bool:

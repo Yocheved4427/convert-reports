@@ -41,7 +41,7 @@ def _validate_type_a(report: TypeAReport) -> None:
             )
 
         # overtime buckets should sum to ≈ total
-        bucket_sum = row.hours_100 + row.hours_125 + row.hours_150
+        bucket_sum = (row.regular_hours or 0) + (row.overtime_125_hours or 0) + (row.overtime_150_hours or 0)
         if abs(bucket_sum - row.total_hours) > 0.1:
             errors.append(
                 f"Row {i} ({row.date}): bucket sum {bucket_sum} ≠ total {row.total_hours}"

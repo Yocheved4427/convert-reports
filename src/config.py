@@ -53,11 +53,11 @@ class TypeATransformConfig(BaseSettings):
     )
 
 
-class TypeNTransformConfig(BaseSettings):
-    """Knobs for the Type-N (simple monthly) transformer."""
+class TypeBTransformConfig(BaseSettings):
+    """Knobs for the Type-B (simple monthly) transformer."""
 
     model_config = SettingsConfigDict(
-        env_prefix="TYPEN_",
+        env_prefix="TYPEB_",
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
@@ -83,4 +83,5 @@ class TypeNTransformConfig(BaseSettings):
 
 # Module-level singletons – import these in transformer code.
 type_a_config = TypeATransformConfig()
-type_n_config = TypeNTransformConfig()
+type_b_config = TypeBTransformConfig()
+type_n_config = type_b_config  # backward-compat alias

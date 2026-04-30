@@ -9,11 +9,22 @@ from __future__ import annotations
 
 import pytest
 
-from src.models.type_a import TypeAReport, TypeARow, TypeASummary
-from src.models.type_n import TypeNReport, TypeNRow, TypeNSummary
+from src.models import (
+    AttendanceReport,
+    AttendanceRow,
+    AttendanceSummary,
+    ReportType,
+)
+# Backward-compatible aliases – still resolve to the unified classes
+TypeAReport  = AttendanceReport
+TypeARow     = AttendanceRow
+TypeASummary = AttendanceSummary
+TypeNReport  = AttendanceReport
+TypeNRow     = AttendanceRow
+TypeNSummary = AttendanceSummary
 from src.transformers.helpers import time_to_minutes
 from src.transformers.type_a_transformer import TypeATransformer
-from src.transformers.type_n_transformer import TypeNTransformer
+from src.transformers.type_n_transformer import TypeBTransformer as TypeNTransformer
 
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -31,9 +42,9 @@ def _make_type_a_row(
         exit_time=exit_,
         break_minutes=0.5,
         total_hours=8.5,
-        hours_100=8.0,
-        hours_125=0.5,
-        hours_150=0.0,
+        regular_hours=8.0,
+        overtime_125_hours=0.5,
+        overtime_150_hours=0.0,
     )
 
 
@@ -60,9 +71,9 @@ def _type_a_report(rows: list[TypeARow] | None = None) -> TypeAReport:
         summary=TypeASummary(
             work_days=len(rows),
             total_hours=9.0 * len(rows),
-            hours_100=8.0 * len(rows),
-            hours_125=1.0 * len(rows),
-            hours_150=0.0,
+            regular_hours=8.0 * len(rows),
+            overtime_125_hours=1.0 * len(rows),
+            overtime_150_hours=0.0,
         ),
     )
 
@@ -100,7 +111,9 @@ class TestTypeATransformer:
         report = _type_a_report()
         result = self.transformer.transform(report, seed=1)
         for row in result.rows:
-            bucket_sum = round(row.hours_100 + row.hours_125 + row.hours_150, 6)
+            bucket_sum = round(
+                (row.regular_hours or 0) + (row.overtime_125_hours or 0) + (row.overtime_150_hours or 0), 6
+            )
             assert bucket_sum == pytest.approx(row.total_hours, abs=1e-4), (
                 f"Bucket sum {bucket_sum} != total_hours {row.total_hours}"
             )
@@ -224,13 +237,13 @@ class TestTypeNTransformer:
         """Rows with empty entry/exit must be passed through (no crash)."""
         rows = [
             TypeNRow(date="05/01/2023", day_of_week="חמישי",
-                     entry_time="", exit_time="", total_hours=0.0),
+                     entry_time=None, exit_time=None, total_hours=0.0),
         ]
         report = _type_n_report(rows=rows)
         result = self.transformer.transform(report, seed=0)
         assert len(result.rows) == 1
-        assert result.rows[0].entry_time == ""
-        assert result.rows[0].exit_time == ""
+        assert not result.rows[0].entry_time
+        assert not result.rows[0].exit_time
 
     def test_result_is_immutable(self):
         result = self.transformer.transform(_type_n_report(), seed=0)

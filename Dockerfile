@@ -1,42 +1,39 @@
 # ── Stage 1: base image ───────────────────────────────────────────────────────
 FROM python:3.11-slim
 
-# System dependencies required by pdfplumber, EasyOCR and Pillow
+# System dependencies: Tesseract (Hebrew), Poppler (pdf2image), shared libs
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        tesseract-ocr \
+        tesseract-ocr-heb \
+        poppler-utils \
         libglib2.0-0 \
         libgl1 \
         libgomp1 \
-        poppler-utils \
     && rm -rf /var/lib/apt/lists/*
+
+# Tell Tesseract where to find language data
+ENV TESSDATA_PREFIX=/usr/share/tessdata
 
 # ── Working directory ─────────────────────────────────────────────────────────
 WORKDIR /app
 
 # ── Install Python dependencies ───────────────────────────────────────────────
-# Copy only requirements first to leverage layer caching
 COPY requirements.txt .
-
-# Install CPU-only torch BEFORE requirements.txt so pip reuses it instead of
-# pulling the massive CUDA-enabled wheel that easyocr would otherwise trigger.
-RUN pip install --no-cache-dir \
-    torch==2.2.2+cpu \
-    torchvision==0.17.2+cpu \
-    --index-url https://download.pytorch.org/whl/cpu
-
 RUN pip install --no-cache-dir -r requirements.txt
 
 # ── Copy application source ───────────────────────────────────────────────────
+COPY pyproject.toml .
 COPY main.py .
 COPY src/ src/
 
-# ── Runtime directories (can be overridden with volume mounts) ────────────────
+# ── Install the package itself (registers the console script) ────────────────
+RUN pip install --no-cache-dir .
+
+# ── Runtime directories (overridden by volume mounts) ────────────────────────
 RUN mkdir -p input_pdfs output_pdfs
 
-# ── Default command ───────────────────────────────────────────────────────────
-# Mount input_pdfs/ and output_pdfs/ as volumes when running:
-#   docker run --rm \
-#     -v "$(pwd)/input_pdfs:/app/input_pdfs" \
-#     -v "$(pwd)/output_pdfs:/app/output_pdfs" \
-#     convert-reports
-ENTRYPOINT ["python", "main.py"]
-CMD ["--input", "input_pdfs/", "--output", "output_pdfs/"]
+# ── Entry point ───────────────────────────────────────────────────────────────
+# Container behaves as a CLI tool:
+#   docker run --rm -v $(pwd)/samples:/data attendance-report /data/sample.pdf -o /data/
+ENTRYPOINT ["attendance-report"]
+CMD ["--help"]
