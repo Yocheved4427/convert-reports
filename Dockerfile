@@ -1,42 +1,67 @@
-# ── Stage 1: base image ───────────────────────────────────────────────────────
+# ── Stage 1: dependency installer ─────────────────────────────────────────────
+# Use a slim builder stage to install Python wheels so the final image stays lean.
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+
+# System build-time deps (needed by some Python packages)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc \
+        libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+
+# ── Stage 2: runtime image ─────────────────────────────────────────────────────
 FROM python:3.11-slim
 
-# System dependencies required by pdfplumber, EasyOCR and Pillow
+# ── System runtime dependencies ────────────────────────────────────────────────
+# tesseract-ocr       – OCR engine
+# tesseract-ocr-heb   – Hebrew language data pack
+# poppler-utils       – pdf2image / pdfinfo (PDF → image conversion)
+# libglib2.0-0        – GLib shared library (pdfplumber transitive dep)
+# libgl1              – OpenGL (required by EasyOCR / OpenCV)
+# libgomp1            – OpenMP (used by NumPy / EasyOCR multi-threading)
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        tesseract-ocr \
+        tesseract-ocr-heb \
+        poppler-utils \
         libglib2.0-0 \
         libgl1 \
         libgomp1 \
-        poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# ── Working directory ─────────────────────────────────────────────────────────
+# Tell Tesseract where its language data lives
+ENV TESSDATA_PREFIX=/usr/share/tessdata
+
+# ── Copy installed Python packages from builder ─────────────────────────────────
+COPY --from=builder /install /usr/local
+
+# ── Application source ─────────────────────────────────────────────────────────
 WORKDIR /app
-
-# ── Install Python dependencies ───────────────────────────────────────────────
-# Copy only requirements first to leverage layer caching
-COPY requirements.txt .
-
-# Install CPU-only torch BEFORE requirements.txt so pip reuses it instead of
-# pulling the massive CUDA-enabled wheel that easyocr would otherwise trigger.
-RUN pip install --no-cache-dir \
-    torch==2.2.2+cpu \
-    torchvision==0.17.2+cpu \
-    --index-url https://download.pytorch.org/whl/cpu
-
-RUN pip install --no-cache-dir -r requirements.txt
-
-# ── Copy application source ───────────────────────────────────────────────────
+COPY pyproject.toml .
 COPY main.py .
 COPY src/ src/
 
-# ── Runtime directories (can be overridden with volume mounts) ────────────────
-RUN mkdir -p input_pdfs output_pdfs
+# Install the package so the ``attendance-report`` console script is registered
+RUN pip install --no-cache-dir --no-deps .
 
-# ── Default command ───────────────────────────────────────────────────────────
-# Mount input_pdfs/ and output_pdfs/ as volumes when running:
+# ── Non-root user (security hardening) ────────────────────────────────────────
+RUN useradd --create-home --shell /bin/bash appuser
+USER appuser
+
+# ── Runtime volume mounts (overridden by docker run -v …) ─────────────────────
+RUN mkdir -p /home/appuser/input_pdfs /home/appuser/output_pdfs
+
+# ── Entry point ────────────────────────────────────────────────────────────────
+# The container behaves as a standalone CLI tool:
+#
 #   docker run --rm \
-#     -v "$(pwd)/input_pdfs:/app/input_pdfs" \
-#     -v "$(pwd)/output_pdfs:/app/output_pdfs" \
-#     convert-reports
-ENTRYPOINT ["python", "main.py"]
-CMD ["--input", "input_pdfs/", "--output", "output_pdfs/"]
+#     -v "$(pwd)/samples:/data" \
+#     attendance-report \
+#     /data/sample.pdf -o /data/
+#
+ENTRYPOINT ["attendance-report"]
+CMD ["--help"]

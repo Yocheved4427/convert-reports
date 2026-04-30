@@ -14,13 +14,13 @@ from typing import NamedTuple
 from src.models import ReportType
 from src.parsers.base_parser import BaseParser
 from src.parsers.type_a_parser import TypeAParser
-from src.parsers.type_n_parser import TypeNParser
+from src.parsers.type_n_parser import TypeNParser as TypeBParser
 from src.renderers.base_renderer import BaseRenderer
 from src.renderers.type_a_renderer import TypeARenderer
-from src.renderers.type_n_renderer import TypeNRenderer
+from src.renderers.type_n_renderer import TypeNRenderer as TypeBRenderer
 from src.transformers.base_transformer import BaseTransformer
 from src.transformers.type_a_transformer import TypeATransformer
-from src.transformers.type_n_transformer import TypeNTransformer
+from src.transformers.type_n_transformer import TypeBTransformer
 
 
 class PipelineComponents(NamedTuple):
@@ -43,7 +43,7 @@ class ReportProcessorFactory:
 
     _registry: dict[ReportType, tuple[type, type, type]] = {
         ReportType.TYPE_A: (TypeAParser, TypeATransformer, TypeARenderer),
-        ReportType.TYPE_N: (TypeNParser, TypeNTransformer, TypeNRenderer),
+        ReportType.TYPE_B: (TypeBParser, TypeBTransformer, TypeBRenderer),
     }
 
     @classmethod

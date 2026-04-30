@@ -5,16 +5,18 @@ Base transformer interface.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Union
 
-from src.models import TypeAReport, TypeNReport
+from src.models.attendance import AttendanceReport
 
 
 class BaseTransformer(ABC):
     """Apply deterministic logical changes to a parsed report."""
 
     @abstractmethod
-    def transform(self, report: Union[TypeAReport, TypeNReport],
-                  seed: int = 42,
-                  location_override: str = "") -> Union[TypeAReport, TypeNReport]:
+    def transform(
+        self,
+        report: AttendanceReport,
+        seed: int = 42,
+        location_override: str = "",
+    ) -> AttendanceReport:
         ...

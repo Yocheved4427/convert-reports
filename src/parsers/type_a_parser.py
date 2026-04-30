@@ -1,12 +1,15 @@
 """
 Parser for Type-A reports (detailed attendance with overtime breakdown).
 
-Uses a dynamic, position-agnostic approach:
-  - Identifies data rows by finding a date in dd/mm/yyyy format
-  - Classifies remaining tokens by type: time, decimal, text
-  - Maps tokens by RTL order (after the date):
-    text → day/location, times → entry/exit,
-    decimals → break, total, 100%, 125%, 150%
+Implements the four abstract hooks defined by ``BaseParser``'s Template
+Method pattern.  The algorithm skeleton (row iteration, header skipping,
+report assembly call) lives entirely in ``BaseParser.parse()``; this class
+provides only the Type-A–specific steps:
+
+  _is_header_line  – skip rows that contain no long-format date
+  _parse_row       – extract one AttendanceRow from a date-bearing OCR row
+  _parse_summary   – returns None (summary is built from rows in _build_report)
+  _build_report    – compute overtime summary and assemble AttendanceReport
 """
 
 from __future__ import annotations
@@ -16,8 +19,9 @@ import re
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from src.models import TypeAReport, TypeARow, TypeASummary
-from src.ocr_utils import OCRRow, OCRToken, parse_float, parse_time
+from src.models import ReportType
+from src.models.attendance import AttendanceReport, AttendanceRow, AttendanceSummary
+from src.ocr import OCRRow, OCRToken, parse_float, parse_time
 from src.parsers.base_parser import BaseParser
 
 logger = logging.getLogger(__name__)
@@ -41,11 +45,7 @@ _TokKind = str   # one of: "date" | "time" | "number" | "text"
 
 
 def _classify_tok(tok: OCRToken) -> _TokKind:
-    """Classify an OCR token into one of four mutually-exclusive kinds.
-
-    Returns a string literal so callers can use ``match kind: case "time": …``
-    (structural pattern-matching on string values).
-    """
+    """Classify an OCR token into one of four mutually-exclusive kinds."""
     t = tok.text.strip()
     match True:
         case _ if _DATE_LONG_RE.search(t):
@@ -68,104 +68,134 @@ def _safe_float(raw: str, default: float = 0.0) -> float:
 
 
 class TypeAParser(BaseParser):
-    """Parse OCR rows into a TypeAReport."""
+    """Type-A concrete parser – implements the four ``BaseParser`` hooks."""
 
-    def parse(self, rows: List[OCRRow], pdf_path: str | Path = "") -> TypeAReport:
-        header_text = Path(pdf_path).stem if pdf_path else ""
+    # ── Hook 1 ────────────────────────────────────────────────────────────────
 
-        data_rows: List[TypeARow] = []
+    def _is_header_line(self, row: OCRRow) -> bool:
+        """Skip any OCR row that does not contain a long-format date token.
 
-        for row in rows:
-            tokens = row.tokens  # sorted RTL (highest‑x first)
-            date_info = _find_date_token(tokens)
-            if date_info is None:
-                continue
+        Type-A PDFs may include column-header rows, separator rows, or
+        summary-label rows that carry no dd/mm/yyyy date.  Returning True
+        here causes ``BaseParser.parse()`` to skip the row entirely before
+        it reaches ``_parse_row()``.
+        """
+        return _find_date_token(row.tokens) is None
 
-            date_idx, date_str = date_info
+    # ── Hook 2 ────────────────────────────────────────────────────────────────
 
-            # Collect tokens AFTER the date (lower x = columns to the left)
-            after_date = tokens[date_idx + 1:]
+    def _parse_row(self, row: OCRRow) -> Optional[AttendanceRow]:
+        """Extract one ``AttendanceRow`` from a date-bearing OCR row.
 
-            times: List[str] = []
-            numbers: List[float] = []
-            texts: List[str] = []
+        Token layout (RTL, highest-x first after the date token):
+          texts   → [day_of_week, location]
+          times   → [entry_time, exit_time]
+          numbers → [break, total_hours, hours_100, hours_125, hours_150]
+        """
+        tokens = row.tokens
+        date_info = _find_date_token(tokens)
+        if date_info is None:
+            return None  # safety guard (should have been caught by _is_header_line)
 
-            for tok in after_date:
-                match _classify_tok(tok):
-                    case "time" if len(times) < 2:
-                        # First 2 time-tokens are entry/exit
-                        times.append(tok.text.strip())
-                    case "time" | "number":
-                        # time-like but already have 2 → treat as number
-                        numbers.append(_safe_float(tok.text))
-                    case "text":
-                        texts.append(tok.text.strip())
+        date_idx, date_str = date_info
+        after_date = tokens[date_idx + 1:]
 
-            # Day of week: text token right before date (if any)
-            day_of_week = ""
-            for tok in tokens[:date_idx]:
-                match _classify_tok(tok):
-                    case "text" if len(tok.text.strip()) > 1:
-                        day_of_week = tok.text.strip()
-                        break
+        times: List[str] = []
+        numbers: List[float] = []
+        texts: List[str] = []
 
-            if not day_of_week and texts:
-                day_of_week = texts.pop(0)
+        for tok in after_date:
+            match _classify_tok(tok):
+                case "time" if len(times) < 2:
+                    times.append(tok.text.strip())
+                case "time" | "number":
+                    numbers.append(_safe_float(tok.text))
+                case "text":
+                    texts.append(tok.text.strip())
 
-            # Raw OCR location text – stored as-is; the transformer will
-            # canonicalise it via LocationRegistry.
-            location = texts[0] if texts else ""
+        # Day of week: text token right before date (if any)
+        day_of_week = ""
+        for tok in tokens[:date_idx]:
+            match _classify_tok(tok):
+                case "text" if len(tok.text.strip()) > 1:
+                    day_of_week = tok.text.strip()
+                    break
 
-            # Times: entry then exit (sorted by descending x → entry first)
-            entry_time = parse_time(times[0]) if len(times) >= 1 else "08:00"
-            exit_time = parse_time(times[1]) if len(times) >= 2 else "15:00"
+        if not day_of_week and texts:
+            day_of_week = texts.pop(0)
 
-            # Numbers in RTL order after times:
-            # break, total, hours_100, hours_125, hours_150
-            break_val = numbers[0] if len(numbers) >= 1 else 0.0
-            total_val = numbers[1] if len(numbers) >= 2 else 0.0
-            h100 = numbers[2] if len(numbers) >= 3 else 0.0
-            h125 = numbers[3] if len(numbers) >= 4 else 0.0
-            h150 = numbers[4] if len(numbers) >= 5 else 0.0
+        # Raw OCR location text – transformer will canonicalise it.
+        location = texts[0] if texts else ""
 
-            data_rows.append(TypeARow(
-                date=date_str,
-                day_of_week=day_of_week,
-                location=location,
-                entry_time=entry_time or "08:00",
-                exit_time=exit_time or "15:00",
-                break_minutes=break_val,
-                total_hours=total_val,
-                hours_100=h100,
-                hours_125=h125,
-                hours_150=h150,
-                notes="",
-            ))
+        entry_time = parse_time(times[0]) if len(times) >= 1 else "08:00"
+        exit_time  = parse_time(times[1]) if len(times) >= 2 else "15:00"
 
+        # Numbers in RTL order after times:
+        # break, total, regular_hours, overtime_125_hours, overtime_150_hours
+        break_val = numbers[0] if len(numbers) >= 1 else 0.0
+        total_val = numbers[1] if len(numbers) >= 2 else 0.0
+        h100      = numbers[2] if len(numbers) >= 3 else 0.0
+        h125      = numbers[3] if len(numbers) >= 4 else 0.0
+        h150      = numbers[4] if len(numbers) >= 5 else 0.0
+
+        return AttendanceRow(
+            date=date_str,
+            day_of_week=day_of_week,
+            location=location,
+            entry_time=entry_time or "08:00",
+            exit_time=exit_time  or "15:00",
+            break_minutes=break_val,
+            total_hours=total_val,
+            regular_hours=h100,
+            overtime_125_hours=h125,
+            overtime_150_hours=h150,
+            notes="",
+        )
+
+    # ── Hook 3 ────────────────────────────────────────────────────────────────
+
+    def _parse_summary(self, rows: List[OCRRow]) -> Optional[AttendanceSummary]:
+        """Type-A PDFs have no pre-built summary block to extract.
+
+        The summary is computed from the fully-parsed data rows inside
+        ``_build_report()``, so this hook returns ``None``.
+        """
+        return None
+
+    # ── Hook 4 ────────────────────────────────────────────────────────────────
+
+    def _build_report(
+        self,
+        header_text: str,
+        data_rows: List[AttendanceRow],
+        summary: Optional[AttendanceSummary],
+    ) -> AttendanceReport:
+        """Compute overtime summary totals and assemble the AttendanceReport."""
         month_year = ""
         if data_rows:
             parts = data_rows[0].date.split("/")
             if len(parts) == 3:
                 month_year = f"{parts[1]}/{parts[2]}"
 
-        summary = TypeASummary(
+        computed_summary = AttendanceSummary(
             work_days=len(data_rows),
             total_hours=round(sum(r.total_hours for r in data_rows), 2),
-            hours_100=round(sum(r.hours_100 for r in data_rows), 2),
-            hours_125=round(sum(r.hours_125 for r in data_rows), 2),
-            hours_150=round(sum(r.hours_150 for r in data_rows), 2),
+            regular_hours=round(sum(r.regular_hours or 0.0 for r in data_rows), 2),
+            overtime_125_hours=round(sum(r.overtime_125_hours or 0.0 for r in data_rows), 2),
+            overtime_150_hours=round(sum(r.overtime_150_hours or 0.0 for r in data_rows), 2),
         )
 
-        report = TypeAReport(
+        report = AttendanceReport(
+            report_type=ReportType.TYPE_A,
             header_text=header_text,
             month_year=month_year,
             rows=data_rows,
-            summary=summary,
+            summary=computed_summary,
         )
 
         logger.info(
             f"Type-A parsed: {len(data_rows)} rows, "
             f"month={report.month_year}, "
-            f"total_hours={report.summary.total_hours}"
+            f"total_hours={report.summary.total_hours if report.summary else 0}"
         )
         return report

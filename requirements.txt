@@ -1,9 +1,24 @@
-pdfplumber>=0.11
-easyocr>=1.7
-openpyxl>=3.1
-python-dateutil>=2.8
+# OCR
+pytesseract>=0.3.10
+pdf2image>=1.17
+
+# Image processing
 Pillow>=9.0
 numpy>=1.26,<2.0
+
+# PDF text extraction (used by existing OCR utils)
+pdfplumber>=0.11
+
+# Rendering
+openpyxl>=3.1
+weasyprint>=60.0
+
+# Data / parsing
+python-dateutil>=2.8
+
+# Configuration
 pydantic>=2.0
 pydantic-settings>=2.0
+
+# Testing
 pytest>=7.0

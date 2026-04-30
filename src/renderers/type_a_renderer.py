@@ -82,9 +82,9 @@ class TypeARenderer(BaseRenderer):
                 r.exit_time,
                 r.break_minutes,
                 r.total_hours,
-                r.hours_100,
-                r.hours_125,
-                r.hours_150,
+                r.regular_hours,
+                r.overtime_125_hours,
+                r.overtime_150_hours,
                 r.notes,
             ]
             for col_idx, val in enumerate(values, start=1):
@@ -108,9 +108,9 @@ class TypeARenderer(BaseRenderer):
             summary_data = [
                 ("ימי עבודה", report.summary.work_days),
                 ('סה"כ שעות', report.summary.total_hours),
-                ("100%", report.summary.hours_100),
-                ("125%", report.summary.hours_125),
-                ("150%", report.summary.hours_150),
+                ("100%", report.summary.regular_hours),
+                ("125%", report.summary.overtime_125_hours),
+                ("150%", report.summary.overtime_150_hours),
             ]
             # Place summary in a two-column layout below the table
             row_num += 1
