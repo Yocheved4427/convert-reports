@@ -1,5 +1,20 @@
 """
-TransformationService – orchestrates row transformation via the Strategy pattern.
+TransformationService – report-level orchestrator for the Strategy pattern.
+
+This service owns the **only** transformation loop in the codebase.  Every
+type-specific decision is delegated exclusively to the ``BaseTransformationStrategy``
+registered for the report type — zero ``if report_type == …`` branching exists
+here.
+
+Design principles
+-----------------
+* **Open/Closed**: adding a new report type requires only a new strategy class
+  and one registry entry; this service never changes.
+* **Single Responsibility**: the service knows how to *iterate* and *dispatch*,
+  but knows nothing about time-shifting, overtime buckets, or location rules.
+* **Decorator transparency**: strategies should be wrapped in
+  ``ValidatingStrategyDecorator`` before being registered; the service does not
+  know or care whether a decorator is present.
 
 Usage::
 
@@ -16,17 +31,12 @@ Usage::
     }
     service = TransformationService(strategy_registry=registry)
     transformed = service.transform(report, seed=42, location_override="")
-
-Design constraints
-------------------
-* No ``if report_type == "TYPE_A"`` branching – dispatch is purely via registry.
-* Row-level ``TransformationError`` is caught here; the original row is kept.
-* Adding a new report type requires only a new strategy + one registry entry.
 """
 
 from __future__ import annotations
 
 import logging
+from typing import Dict
 
 from src.exceptions import TransformationError
 from src.models.attendance import AttendanceReport, AttendanceRow
@@ -36,20 +46,33 @@ logger = logging.getLogger(__name__)
 
 
 class TransformationService:
-    """Apply a per-row strategy to every row in an ``AttendanceReport``.
+    """Apply a per-row ``BaseTransformationStrategy`` to an ``AttendanceReport``.
+
+    The service is completely agnostic to the report type; dispatch is handled
+    purely through the ``strategy_registry`` dictionary.
 
     Args:
         strategy_registry: Mapping from report-type string (e.g. ``"TYPE_A"``)
                            to a ``BaseTransformationStrategy`` instance.
                            Strategies should already be wrapped in
-                           ``ValidatingStrategyDecorator``.
+                           ``ValidatingStrategyDecorator`` to enforce row-level
+                           invariants automatically.
+
+    Example::
+
+        service = TransformationService(
+            strategy_registry={
+                "TYPE_A": ValidatingStrategyDecorator(TypeATransformationStrategy()),
+                "TYPE_B": ValidatingStrategyDecorator(TypeBTransformationStrategy()),
+            }
+        )
     """
 
     def __init__(
         self,
-        strategy_registry: dict[str, BaseTransformationStrategy],
+        strategy_registry: Dict[str, BaseTransformationStrategy],
     ) -> None:
-        self._registry = strategy_registry
+        self._registry: Dict[str, BaseTransformationStrategy] = strategy_registry
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -61,43 +84,51 @@ class TransformationService:
     ) -> AttendanceReport:
         """Transform *report* using the strategy registered for its type.
 
+        Algorithm (no type-specific branching):
+          1. Look up the strategy from the registry via ``report.report_type``.
+          2. Call ``strategy.prepare()`` once with report-level context.
+          3. Iterate all rows, calling ``strategy.transform_row()`` on each.
+             On ``TransformationError`` the original (un-transformed) row is
+             kept and a WARNING is logged so failures are always traceable.
+          4. Call ``strategy.build_summary()`` to assemble the final report.
+
         Args:
             report:            Parsed (frozen) ``AttendanceReport``.
-            seed:              Random seed for deterministic output.
-            location_override: Optional location name override.
+            seed:              Random seed for fully deterministic output.
+            location_override: Optional workplace name; forwarded to strategy.
 
         Returns:
-            A new ``AttendanceReport`` with all transformations applied.
+            A new frozen ``AttendanceReport`` with all transformations applied.
 
         Raises:
-            KeyError: if no strategy is registered for the report type.
+            KeyError: if no strategy is registered for ``report.report_type``.
         """
-        # Resolve the registry key from the report type
+        # ── Step 1: resolve registry key ─────────────────────────────────────
         rt = report.report_type
         key = rt.value if rt is not None else ""
         if key not in self._registry:
             raise KeyError(
                 f"TransformationService: no strategy registered for "
-                f"report type '{key}'.  Registered: {list(self._registry)}"
+                f"report type {key!r}.  Registered: {sorted(self._registry)}"
             )
 
         strategy = self._registry[key]
 
-        # Let the strategy initialise report-level context
+        # ── Step 2: let the strategy cache all report-level context ───────────
         strategy.prepare(report, seed, location_override)
 
-        # Transform each row; fall back to original on validation failure
+        # ── Step 3: transform each row, falling back on validation failure ────
         new_rows: list[AttendanceRow] = []
         for row in report.rows:
             try:
                 new_rows.append(strategy.transform_row(row))
             except TransformationError as exc:
                 logger.warning(
-                    "Row %s: validation failed (%s) – keeping original row",
+                    "Row %s skipped (validation failure: %s) – original row kept.",
                     row.date or "<unknown>",
                     exc,
                 )
                 new_rows.append(row)
 
-        # Let the strategy rebuild the report (updates summary, location_id, etc.)
+        # ── Step 4: rebuild the report (summary, location_id, …) ─────────────
         return strategy.build_summary(new_rows, report)

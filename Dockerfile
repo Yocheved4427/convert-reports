@@ -1,7 +1,29 @@
-# ── Stage 1: base image ───────────────────────────────────────────────────────
+# ── Stage 1: dependency installer ─────────────────────────────────────────────
+# Use a slim builder stage to install Python wheels so the final image stays lean.
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+
+# System build-time deps (needed by some Python packages)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc \
+        libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+
+# ── Stage 2: runtime image ─────────────────────────────────────────────────────
 FROM python:3.11-slim
 
-# System dependencies: Tesseract (Hebrew), Poppler (pdf2image), shared libs
+# ── System runtime dependencies ────────────────────────────────────────────────
+# tesseract-ocr       – OCR engine
+# tesseract-ocr-heb   – Hebrew language data pack
+# poppler-utils       – pdf2image / pdfinfo (PDF → image conversion)
+# libglib2.0-0        – GLib shared library (pdfplumber transitive dep)
+# libgl1              – OpenGL (required by EasyOCR / OpenCV)
+# libgomp1            – OpenMP (used by NumPy / EasyOCR multi-threading)
 RUN apt-get update && apt-get install -y --no-install-recommends \
         tesseract-ocr \
         tesseract-ocr-heb \
@@ -11,29 +33,35 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Tell Tesseract where to find language data
+# Tell Tesseract where its language data lives
 ENV TESSDATA_PREFIX=/usr/share/tessdata
 
-# ── Working directory ─────────────────────────────────────────────────────────
+# ── Copy installed Python packages from builder ─────────────────────────────────
+COPY --from=builder /install /usr/local
+
+# ── Application source ─────────────────────────────────────────────────────────
 WORKDIR /app
-
-# ── Install Python dependencies ───────────────────────────────────────────────
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# ── Copy application source ───────────────────────────────────────────────────
 COPY pyproject.toml .
 COPY main.py .
 COPY src/ src/
 
-# ── Install the package itself (registers the console script) ────────────────
-RUN pip install --no-cache-dir .
+# Install the package so the ``attendance-report`` console script is registered
+RUN pip install --no-cache-dir --no-deps .
 
-# ── Runtime directories (overridden by volume mounts) ────────────────────────
-RUN mkdir -p input_pdfs output_pdfs
+# ── Non-root user (security hardening) ────────────────────────────────────────
+RUN useradd --create-home --shell /bin/bash appuser
+USER appuser
 
-# ── Entry point ───────────────────────────────────────────────────────────────
-# Container behaves as a CLI tool:
-#   docker run --rm -v $(pwd)/samples:/data attendance-report /data/sample.pdf -o /data/
+# ── Runtime volume mounts (overridden by docker run -v …) ─────────────────────
+RUN mkdir -p /home/appuser/input_pdfs /home/appuser/output_pdfs
+
+# ── Entry point ────────────────────────────────────────────────────────────────
+# The container behaves as a standalone CLI tool:
+#
+#   docker run --rm \
+#     -v "$(pwd)/samples:/data" \
+#     attendance-report \
+#     /data/sample.pdf -o /data/
+#
 ENTRYPOINT ["attendance-report"]
 CMD ["--help"]
