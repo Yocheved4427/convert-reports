@@ -126,3 +126,23 @@ def validate_report(report: Union[TypeAReport, TypeNReport]) -> None:
             _validate_type_n(report)
         case _:
             raise TypeError(f"Unknown report type: {type(report)}")
+
+
+class ReportValidator:
+    """Injectable validator that wraps the ``validate_report`` function.
+
+    Provides an object-oriented interface suitable for dependency injection;
+    ``main.py`` and other callers receive this via ``Container.get_report_validator()``
+    and never import or call ``validate_report`` directly.
+    """
+
+    def validate(self, report: Union[TypeAReport, TypeNReport]) -> None:
+        """Validate *report*, raising ``ValidationError`` on failure.
+
+        Args:
+            report: A transformed ``TypeAReport`` or ``TypeNReport``.
+
+        Raises:
+            ValidationError: if any logical consistency check fails.
+        """
+        validate_report(report)

@@ -46,7 +46,7 @@ def _get_reader() -> Any:
     return _reader
 
 
-@dataclass
+@dataclass(frozen=True)
 class OCRToken:
     """Single recognised text element with its position."""
     text: str
@@ -59,7 +59,7 @@ class OCRToken:
     y_max: float
 
 
-@dataclass
+@dataclass(frozen=True)
 class OCRRow:
     """One visual row of tokens (grouped by y-proximity)."""
     y_center: float
@@ -134,28 +134,28 @@ def cluster_into_rows(tokens: List[OCRToken],
         return []
 
     sorted_tokens = sorted(tokens, key=lambda t: t.y_center)
-    rows: List[OCRRow] = []
-    current_row = OCRRow(y_center=sorted_tokens[0].y_center,
-                         tokens=[sorted_tokens[0]])
+
+    # Accumulate groups as plain lists; build frozen OCRRows at the end.
+    groups: List[List[OCRToken]] = [[sorted_tokens[0]]]
+    y_centers: List[float] = [sorted_tokens[0].y_center]
 
     for tok in sorted_tokens[1:]:
-        if abs(tok.y_center - current_row.y_center) <= y_tolerance:
-            current_row.tokens.append(tok)
-            # Update row y_center as running average
-            n = len(current_row.tokens)
-            current_row.y_center = (
-                current_row.y_center * (n - 1) + tok.y_center
-            ) / n
+        running_y = y_centers[-1]
+        if abs(tok.y_center - running_y) <= y_tolerance:
+            groups[-1].append(tok)
+            n = len(groups[-1])
+            y_centers[-1] = (running_y * (n - 1) + tok.y_center) / n
         else:
-            rows.append(current_row)
-            current_row = OCRRow(y_center=tok.y_center, tokens=[tok])
-    rows.append(current_row)
+            groups.append([tok])
+            y_centers.append(tok.y_center)
 
-    # Sort tokens within each row by x descending (RTL: rightmost first)
-    for row in rows:
-        row.tokens.sort(key=lambda t: -t.x_center)
-
-    return rows
+    return [
+        OCRRow(
+            y_center=y,
+            tokens=sorted(grp, key=lambda t: -t.x_center),
+        )
+        for y, grp in zip(y_centers, groups)
+    ]
 
 
 def ocr_pdf(pdf_path: str | Path, resolution: int = 200) -> List[OCRRow]:
