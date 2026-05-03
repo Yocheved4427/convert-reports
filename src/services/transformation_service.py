@@ -36,10 +36,11 @@ Usage::
 from __future__ import annotations
 
 import logging
-from typing import Dict
+from typing import Dict, List, Optional
 
 from src.exceptions import TransformationError
 from src.models.attendance import AttendanceReport, AttendanceRow
+from src.observers.base_observer import TransformationObserver
 from src.strategies.base_strategy import BaseTransformationStrategy
 
 logger = logging.getLogger(__name__)
@@ -71,8 +72,10 @@ class TransformationService:
     def __init__(
         self,
         strategy_registry: Dict[str, BaseTransformationStrategy],
+        observers: Optional[List[TransformationObserver]] = None,
     ) -> None:
         self._registry: Dict[str, BaseTransformationStrategy] = strategy_registry
+        self._observers: List[TransformationObserver] = observers if observers is not None else []
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -121,7 +124,10 @@ class TransformationService:
         new_rows: list[AttendanceRow] = []
         for row in report.rows:
             try:
-                new_rows.append(strategy.transform_row(row))
+                transformed = strategy.transform_row(row)
+                for observer in self._observers:
+                    observer.on_row_transformed(row, transformed)
+                new_rows.append(transformed)
             except TransformationError as exc:
                 logger.warning(
                     "Row %s skipped (validation failure: %s) – original row kept.",

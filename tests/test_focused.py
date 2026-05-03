@@ -265,45 +265,52 @@ class TestCLISmoke:
 
         report = self._make_report()
 
+        # Wire the parser mock
+        mock_parser = MagicMock()
+        mock_parser.parse_pdf.return_value = report
+
+        # Wire the service mock
+        mock_service = MagicMock()
+        mock_service.transform.return_value = report
+
+        # Wire HTML renderer to write a real file so output list is non-empty
+        html_out = out_dir / "test.html"
+
+        def fake_html_render(rpt, path):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("<html/>", encoding="utf-8")
+
+        mock_html_renderer = MagicMock()
+        mock_html_renderer.render.side_effect = fake_html_render
+
+        mock_pdf_renderer = MagicMock()
+        mock_pdf_renderer.render.return_value = None
+
+        mock_validator = MagicMock()
+        mock_validator.validate.return_value = None
+
+        mock_excel_renderer = MagicMock()
+        mock_excel_renderer.render.return_value = None
+
+        mock_container = MagicMock()
+        mock_container.get_parser_factory.return_value.get_parser.return_value = mock_parser
+        mock_container.get_transformation_service.return_value = mock_service
+        mock_container.get_html_renderer.return_value = mock_html_renderer
+        mock_container.get_pdf_renderer.return_value = mock_pdf_renderer
+        mock_container.get_report_validator.return_value = mock_validator
+        mock_container.get_excel_renderer.return_value = mock_excel_renderer
+
         with (
             patch("main.ocr_module.extract_text", return_value="דוח נוכחות TYPE_A"),
             patch("main.classify", return_value="TYPE_A"),
-            patch("main.ParserFactory") as mock_factory_cls,
-            patch("main.TransformationService") as mock_service_cls,
-            patch("main.HtmlRenderer") as mock_html_cls,
-            patch("main.PdfRenderer") as mock_pdf_cls,
-            patch("main.validate_report"),
+            patch("main.Container", mock_container),
         ):
-            # Wire the parser mock
-            mock_parser = MagicMock()
-            mock_parser.parse_pdf.return_value = report
-            mock_factory_cls.return_value.get_parser.return_value = mock_parser
-
-            # Wire the service mock
-            mock_service = MagicMock()
-            mock_service.transform.return_value = report
-            mock_service_cls.return_value = mock_service
-
-            # Wire renderers to write a real file (html) so output list is non-empty
-            html_out = out_dir / "test.html"
-
-            def fake_html_render(rpt, path):
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("<html/>", encoding="utf-8")
-
-            mock_html_cls.return_value.render.side_effect = fake_html_render
-            mock_pdf_cls.return_value.render.return_value = None  # no-op
-
-            # Suppress Excel step by making factory import fail gracefully
-            with patch.dict("sys.modules", {"src.factory": MagicMock(
-                ReportProcessorFactory=MagicMock(get=MagicMock(side_effect=Exception("skip")))
-            )}):
-                from main import main
-                sys.argv = ["attendance-report", str(pdf), "-o", str(out_dir)]
-                try:
-                    main()
-                except SystemExit as exc:
-                    assert exc.code == 0, f"main() exited with non-zero code {exc.code}"
+            from main import main
+            sys.argv = ["attendance-report", str(pdf), "-o", str(out_dir)]
+            try:
+                main()
+            except SystemExit as exc:
+                assert exc.code == 0, f"main() exited with non-zero code {exc.code}"
 
         assert html_out.exists(), "HTML output file was not created"
 

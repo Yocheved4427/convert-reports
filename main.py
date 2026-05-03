@@ -32,30 +32,9 @@ from pathlib import Path
 from src import ocr as ocr_module
 from src.detectors.classifier import classify
 from src.exceptions import ParsingError, RenderingError, UnsupportedReportTypeError
-from src.parsers.parser_factory import ParserFactory
-from src.renderers.html_renderer import HtmlRenderer
-from src.renderers.pdf_renderer import PdfRenderer
-from src.services.transformation_service import TransformationService
-from src.strategies.type_a_strategy import TypeATransformationStrategy
-from src.strategies.type_b_strategy import TypeBTransformationStrategy
-from src.strategies.validating_strategy_decorator import ValidatingStrategyDecorator
-from src.validators.report_validator import ValidationError, validate_report
-
-
-def _build_strategy_registry() -> dict:
-    """Build the fully-decorated strategy registry.
-
-    Each strategy is wrapped in ``ValidatingStrategyDecorator`` so that every
-    transformed row is automatically audited for logical consistency before it
-    is accepted.  ``TransformationService`` is completely agnostic to this.
-
-    Returns:
-        A dictionary mapping report-type strings to decorated strategies.
-    """
-    return {
-        "TYPE_A": ValidatingStrategyDecorator(TypeATransformationStrategy()),
-        "TYPE_B": ValidatingStrategyDecorator(TypeBTransformationStrategy()),
-    }
+from src.factory import Container
+from src.models.report_type import ReportType
+from src.validators.report_validator import ValidationError
 
 
 def process_single_pdf(
@@ -93,17 +72,17 @@ def process_single_pdf(
     logger.info("  Classified as: %s", report_type_str)
 
     # Step 3 – Parse: structured OCR + domain model construction
-    parser = ParserFactory().get_parser(report_type_str)
+    parser = Container.get_parser_factory().get_parser(report_type_str)
     report = parser.parse_pdf(pdf_path)
     logger.info("  Parsed %d rows", len(report.rows))
 
     # Step 4 – Transform: apply strategy (validation decorators are pre-wired)
-    service = TransformationService(strategy_registry=_build_strategy_registry())
+    service = Container.get_transformation_service()
     transformed = service.transform(report, seed=seed, location_override=location_override)
 
     # Step 5 – Validate (non-fatal; emits a warning on failure)
     try:
-        validate_report(transformed)
+        Container.get_report_validator().validate(transformed)
         logger.info("  Validation: PASSED")
     except ValidationError as exc:
         logger.warning("  Validation: FAILED — %s", exc)
@@ -113,24 +92,20 @@ def process_single_pdf(
     outputs: list[Path] = []
 
     html_path = output_dir / f"{stem}.html"
-    HtmlRenderer().render(transformed, html_path)
+    Container.get_html_renderer().render(transformed, html_path)
     outputs.append(html_path)
 
     pdf_out = output_dir / f"{stem}_report.pdf"
-    PdfRenderer().render(transformed, pdf_out)
+    Container.get_pdf_renderer().render(transformed, pdf_out)
     actual_pdf = pdf_out if pdf_out.exists() else pdf_out.with_suffix(".html")
     if actual_pdf.exists():
         outputs.append(actual_pdf)
 
-    # Step 7 – Excel (legacy renderer via ReportProcessorFactory)
+    # Step 7 – Excel (legacy renderer via Container)
     try:
-        from src.factory import ReportProcessorFactory
-        from src.models.report_type import ReportType
-
         rt_enum = ReportType(report_type_str)
-        components = ReportProcessorFactory.get(rt_enum)
         xlsx_path = output_dir / f"{stem}_converted.xlsx"
-        components.renderer.render(transformed, xlsx_path)
+        Container.get_excel_renderer(rt_enum).render(transformed, xlsx_path)
         outputs.append(xlsx_path)
         logger.info("  Excel: %s", xlsx_path.name)
     except Exception as exc:
